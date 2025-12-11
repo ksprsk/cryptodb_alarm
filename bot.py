@@ -15,7 +15,7 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 
-from test import EPrintFetcher, Paper, KST
+from eprint_fetcher import EPrintFetcher, Paper, KST
 
 # .env 파일 로드
 load_dotenv(Path(__file__).parent / ".env")
@@ -77,28 +77,32 @@ def create_embed(paper: Paper) -> discord.Embed:
 
 
 async def send_paper(channel: discord.TextChannel, paper: Paper) -> bool:
-    """논문 전송: 메인 메시지 + 스레드에 Abstract"""
+    """논문 전송: 메인은 제목만, 스레드에 상세정보"""
     try:
-        # 1. 메인 메시지 전송
+        # 1. 메인 메시지 - 제목 한 줄만
+        title_short = paper.title[:80] + "..." if len(paper.title) > 80 else paper.title
+        message = await channel.send(f"📄 **{title_short}**")
+
+        # 2. 스레드 생성 + Embed + Abstract
+        thread = await message.create_thread(
+            name=paper.title[:100],
+            auto_archive_duration=1440  # 24시간
+        )
+
+        # Embed 전송
         embed = create_embed(paper)
-        message = await channel.send(embed=embed)
+        await thread.send(embed=embed)
 
-        # 2. 스레드 생성 + Abstract 전송
+        # Abstract 전송
         if paper.abstract:
-            thread = await message.create_thread(
-                name=f"Abstract: {paper.title[:50]}...",
-                auto_archive_duration=1440  # 24시간
-            )
-
-            # Abstract가 길면 분할 전송 (Discord 메시지 제한 2000자)
             abstract = paper.abstract
             chunks = [abstract[i:i+1900] for i in range(0, len(abstract), 1900)]
 
             for i, chunk in enumerate(chunks):
                 if len(chunks) > 1:
-                    await thread.send(f"**Abstract ({i+1}/{len(chunks)})**\n```\n{chunk}\n```")
+                    await thread.send(f"**Abstract ({i+1}/{len(chunks)})**\n{chunk}")
                 else:
-                    await thread.send(f"**Abstract**\n```\n{chunk}\n```")
+                    await thread.send(f"**Abstract**\n{chunk}")
 
         return True
     except Exception as e:
