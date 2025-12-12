@@ -5,6 +5,7 @@ IACR ePrint Archive Paper Fetcher
 OAI-PMH 프로토콜로 ePrint Archive에서 논문 메타데이터를 가져옵니다.
 """
 
+import re
 import requests
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -30,7 +31,8 @@ class Paper:
     title: str
     authors: List[str] = field(default_factory=list)
     abstract: str = ""
-    keywords: List[str] = field(default_factory=list)
+    categories: List[str] = field(default_factory=list)  # OAI-PMH dc:subject
+    keywords: List[str] = field(default_factory=list)    # 웹페이지 keyword badges
     url: str = ""
     pdf_url: str = ""
     published_date: Optional[datetime] = None
@@ -60,7 +62,7 @@ class EPrintFetcher:
         return self.fetch_since(since)
 
     def fetch_since(self, since: datetime) -> List[Paper]:
-        """특정 시점 이후 논문 가져오기"""
+        """특정 시점 이후 논문 가져오기 (시간순 정렬)"""
         from_date = since.astimezone(timezone.utc).strftime('%Y-%m-%d')
         papers = []
 
@@ -68,6 +70,8 @@ class EPrintFetcher:
             if paper.published_date and paper.published_date >= since:
                 papers.append(paper)
 
+        # 시간순 정렬 (오래된 것부터)
+        papers.sort(key=lambda p: p.published_date or datetime.min.replace(tzinfo=KST))
         return papers
 
     def _harvest(self, from_date: str) -> Generator[Paper, None, None]:
@@ -135,7 +139,7 @@ class EPrintFetcher:
         abstract = self._get_text(metadata, 'dc:description')
         date_str = self._get_text(metadata, 'dc:date')
         authors = self._get_all_text(metadata, 'dc:creator')
-        keywords = self._get_all_text(metadata, 'dc:subject')
+        categories = self._get_all_text(metadata, 'dc:subject')
 
         # 날짜 파싱 (KST)
         published_date = None
@@ -154,7 +158,8 @@ class EPrintFetcher:
             title=title,
             authors=authors,
             abstract=abstract,
-            keywords=keywords,
+            categories=categories,
+            keywords=self.fetch_keywords(eprint_id),
             url=f"{self.BASE_URL}/{eprint_id}",
             pdf_url=f"{self.BASE_URL}/{eprint_id}.pdf",
             published_date=published_date
@@ -167,6 +172,25 @@ class EPrintFetcher:
     def _get_all_text(self, elem: ET.Element, tag: str) -> List[str]:
         return [e.text.strip() for e in elem.findall(tag, OAI_NAMESPACES) if e.text]
 
+    def fetch_keywords(self, eprint_id: str) -> List[str]:
+        """개별 논문 페이지에서 키워드 파싱"""
+        url = f"{self.BASE_URL}/{eprint_id}"
+        try:
+            response = self.session.get(url, timeout=30)
+            response.raise_for_status()
+            # <dd class="keywords">...<a ... class="... keyword">keyword text</a>...</dd>
+            pattern = r'<dd class="keywords">(.*?)</dd>'
+            match = re.search(pattern, response.text, re.DOTALL)
+            if match:
+                keywords_html = match.group(1)
+                # 각 keyword badge에서 텍스트 추출
+                keyword_pattern = r'class="[^"]*keyword[^"]*">([^<]+)</a>'
+                keywords = re.findall(keyword_pattern, keywords_html)
+                return [kw.strip() for kw in keywords if kw.strip()]
+        except Exception as e:
+            print(f"Error fetching keywords for {eprint_id}: {e}")
+        return []
+
 
 if __name__ == "__main__":
     fetcher = EPrintFetcher()
@@ -176,6 +200,7 @@ if __name__ == "__main__":
     for p in papers:
         print(f"[{p.id}] {p.title}")
         print(f"  Authors: {', '.join(p.authors[:3])}")
+        print(f"  Categories: {', '.join(p.categories)}")
         print(f"  Keywords: {', '.join(p.keywords)}")
         print(f"  Date: {p.published_date.strftime('%Y-%m-%d %H:%M KST') if p.published_date else 'N/A'}")
         print()
